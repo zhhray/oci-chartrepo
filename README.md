@@ -7,7 +7,7 @@ oci-chartrepo as an adapter that supports the transformation of OCI data structu
 
 ## build
 ```sh
-# supports amd64 and arm64
+# supports macOS, amd64 and arm64
 make linux-build
 ```
 
@@ -19,7 +19,6 @@ docker run -d --restart=always --name oci-chart-registry \
 oci-chart-registry --storage=registry --storage-registry-repo={your_registry_addr} --port=8080
 
 # if your registry is HTTPS and user login is required, a file in dockerconfigjson(kubernetes secret type) format needs to be mounted to container /etc/secret/dockercfg
-docker build -t oci-chart-registry .
 docker run -d --restart=always --name oci-chart-registry \
 -p 8088:8080 \
 -v ~/dockercfg:/etc/secret/dockercfg \
