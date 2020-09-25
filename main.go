@@ -1,11 +1,26 @@
 package main
 
 import (
+	"encoding/json"
 	"flag"
+	"io/ioutil"
+	"net/http"
+	"os"
+
 	"github.com/alauda/oci-chartrepo/pkg"
 	"github.com/labstack/echo/v4"
 	"github.com/labstack/echo/v4/middleware"
-	"net/http"
+	"k8s.io/klog"
+)
+
+const secretCfgPath = "/etc/secret/dockercfg"
+
+var (
+	registryScheme = "HTTP"
+
+	registryURL      string
+	registryUsername string
+	registryPassword string
 )
 
 func main() {
@@ -13,13 +28,36 @@ func main() {
 	port := flag.String("port", "8080", "listen port")
 	//TODO: remove in chart args and here
 	flag.String("storage", "registry", "storage backend(only registry for now)")
-	url := flag.String("storage-registry-repo", "localhost:5000", "oci registry address")
+	flag.StringVar(&registryURL, "storage-registry-repo", "localhost:5000", "oci registry address")
+
+	// Scheme to use for connecting to the registry. Defaults to HTTP.
+	if _, err := os.Stat(secretCfgPath); !os.IsNotExist(err) {
+		// get user info from secretCfgPath
+		body, err := ioutil.ReadFile(secretCfgPath)
+		if err != nil {
+			panic(err)
+		}
+		var cfg pkg.DockerSecretCfg
+		if err := json.Unmarshal(body, &cfg); err != nil {
+			panic(err)
+		}
+
+		for k, v := range cfg.Auths {
+			registryURL = k
+			registryScheme = "HTTPS"
+			registryUsername = v.Username
+			registryPassword = v.Password
+
+			break
+		}
+	}
+
+	klog.Infof("registry scheme is %s", registryScheme)
 	flag.Parse()
 
 	// Echo instance
 	e := echo.New()
-
-	pkg.GlobalBackend = pkg.NewBackend(*url)
+	pkg.GlobalBackend = pkg.NewBackend(registryURL, registryScheme, registryUsername, registryPassword)
 
 	// Middleware
 	e.Use(middleware.Logger())

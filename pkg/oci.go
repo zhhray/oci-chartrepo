@@ -2,11 +2,13 @@ package pkg
 
 import (
 	"encoding/json"
-	"github.com/heroku/docker-registry-client/registry"
+	"fmt"
 	"io/ioutil"
-	"k8s.io/klog"
 	"strings"
 	"sync"
+
+	"github.com/heroku/docker-registry-client/registry"
+	"k8s.io/klog"
 )
 
 var (
@@ -32,12 +34,24 @@ type Backend struct {
 	Hub *registry.Registry
 }
 
-func NewBackend(url string) *Backend {
-	if !strings.HasPrefix(url, "http") {
-		url = "http://" + url
+func NewBackend(url, scheme, username, password string) *Backend {
+	s := strings.ToLower(scheme)
+	// Default to HTTP backend
+	if s != "https" {
+		s = "HTTP"
+	}
+	if !strings.HasPrefix(url, s) {
+		url = fmt.Sprintf("%s://%s", s, url)
 	}
 
-	hub, err := registry.NewInsecure(url, "", "")
+	var hub *registry.Registry
+	var err error
+	if s == "https" {
+		hub, err = registry.New(url, username, password)
+	} else {
+		hub, err = registry.NewInsecure(url, "", "")
+	}
+
 	if err != nil {
 		panic(err)
 	}
@@ -61,8 +75,11 @@ func (b *Backend) ListObjects() ([]HelmOCIConfig, error) {
 	for _, image := range repositories {
 		tags, err := b.Hub.Tags(image)
 		if err != nil {
-			if strings.Contains(err.Error(), "repository name not known to registry") {
-				klog.Error("err list tags for repo: ", err)
+			klog.Error("err list tags for repo: ", err)
+			if strings.Contains(err.Error(), "repository name not known to registry") ||
+				strings.Contains(err.Error(), "UNAUTHORIZED") ||
+				strings.Contains(err.Error(), "PROJECT_POLICY_VIOLATION") {
+
 				continue
 			}
 			return nil, err
@@ -70,7 +87,14 @@ func (b *Backend) ListObjects() ([]HelmOCIConfig, error) {
 		for _, tag := range tags {
 			manifest, err := b.Hub.OCIManifestV1(image, tag)
 			if err != nil {
-				return nil, err
+				klog.Warning("err get manifest for tag: ", err)
+				if strings.Contains(err.Error(), "UNAUTHORIZED") ||
+					strings.Contains(err.Error(), "PROJECT_POLICY_VIOLATION") {
+					break
+				}
+
+				// FIXME: continue or return error.
+				continue
 			}
 
 			// if one tag is not helm, consider this image is not

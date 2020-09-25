@@ -10,10 +10,18 @@ type RefData struct {
 	Name string
 	//  digest of the data layer
 	Digest digest.Digest
-
 }
 
+type DockerSecretCfg struct {
+	Auths map[string]SecretCfg `json:"auths"`
+}
 
+type SecretCfg struct {
+	Username string `json:"username"`
+	Password string `json:"password"`
+	Email    string `json:"email"`
+	Auth     string `json:"auth"`
+}
 
 // HelmOCIConfig ... from oci manifest config
 type HelmOCIConfig struct {
