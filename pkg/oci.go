@@ -37,21 +37,15 @@ type Backend struct {
 func NewBackend(url, scheme, username, password string) *Backend {
 	s := strings.ToLower(scheme)
 	// Default to HTTP backend
-	if s != "https" {
-		s = "HTTP"
+	if s != SchemeTypeHTTPS {
+		s = SchemeTypeHTTP
 	}
-	if !strings.HasPrefix(url, s) {
-		url = fmt.Sprintf("%s://%s", s, url)
-	}
-
-	var hub *registry.Registry
-	var err error
-	if s == "https" {
-		hub, err = registry.New(url, username, password)
-	} else {
-		hub, err = registry.NewInsecure(url, "", "")
+	prefix := s + "://"
+	if !strings.HasPrefix(url, prefix) {
+		url = fmt.Sprintf("%s%s", prefix, url)
 	}
 
+	hub, err := registry.NewInsecure(url, username, password)
 	if err != nil {
 		panic(err)
 	}

@@ -6,10 +6,20 @@ import (
 	"helm.sh/helm/v3/pkg/repo"
 )
 
-type RefData struct {
-	Name string
-	//  digest of the data layer
-	Digest digest.Digest
+const (
+	SecretCfgPath = "/etc/secret/dockerconfigjson"
+
+	SchemeTypeHTTP  = "http"
+	SchemeTypeHTTPS = "https"
+	PrefixHTTP      = SchemeTypeHTTP + "://"
+	PrefixHTTPS     = SchemeTypeHTTPS + "://"
+)
+
+type RegistryOptions struct {
+	Scheme   string
+	URL      string
+	Username string
+	Password string
 }
 
 type DockerSecretCfg struct {
@@ -21,6 +31,12 @@ type SecretCfg struct {
 	Password string `json:"password"`
 	Email    string `json:"email"`
 	Auth     string `json:"auth"`
+}
+
+type RefData struct {
+	Name string
+	//  digest of the data layer
+	Digest digest.Digest
 }
 
 // HelmOCIConfig ... from oci manifest config
