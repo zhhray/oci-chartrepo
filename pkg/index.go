@@ -6,7 +6,7 @@ import (
 	"helm.sh/helm/v3/pkg/repo"
 )
 
-// Handler
+// IndexHandler handler request
 func IndexHandler(c echo.Context) error {
 	c.Response().Header().Set("Content-Type", "application/x-yaml")
 	data, err := genIndex()

@@ -7,25 +7,35 @@ import (
 	"github.com/alauda/oci-chartrepo/pkg"
 	"github.com/labstack/echo/v4"
 	"github.com/labstack/echo/v4/middleware"
-	"k8s.io/klog"
 )
 
 func main() {
-	var registyOpts = &pkg.RegistryOptions{}
+	var registryOpts = &pkg.RegistryOptions{}
 	// flags
 	port := flag.String("port", "8080", "listen port")
 	//TODO: remove in chart args and here
 	flag.String("storage", "registry", "storage backend(only registry for now)")
-	flag.StringVar(&registyOpts.URL, "storage-registry-repo", "localhost:5000", "oci registry address")
-	flag.StringVar(&registyOpts.Scheme, "storage-registry-scheme", "", "oci registry address scheme")
+	flag.StringVar(&registryOpts.URL, "storage-registry-repo", "localhost:5000", "oci registry address")
+	flag.StringVar(&registryOpts.Scheme, "storage-registry-scheme", "", "oci registry address scheme, default is empty means that the scheme will be automatically determined")
+	flag.BoolVar(&registryOpts.IsHarbor, "storage-registry-is-harborv2", false, "oci registry is harbor v2 or not")
 	flag.Parse()
 
-	pkg.AnalyseResitryOptions(registyOpts)
-	klog.Infof("registry scheme is %s", registyOpts.Scheme)
+	// Get user info from secret config file (if it exists), and full fill registryOpts
+	if err := registryOpts.FullfillRegistryOptions(); err != nil {
+		panic(err)
+	}
 
 	// Echo instance
 	e := echo.New()
-	pkg.GlobalBackend = pkg.NewBackend(registyOpts.URL, registyOpts.Scheme, registyOpts.Username, registyOpts.Password)
+
+	pkg.GlobalBackend = pkg.NewBackend(registryOpts)
+	// When multiple instance of oci-chartrepo exist, this will make sure every instance
+	// has the internal cache before it gets requrest to individual chart. Of course this will slow down
+	// the startup process, we need to add heathcheck later
+	// TODO: add health check for pod
+	if _, err := pkg.GlobalBackend.ListObjects(); err != nil {
+		e.Logger.Fatal("init chart registry cache error", err)
+	}
 
 	// Middleware
 	e.Use(middleware.Logger())
@@ -42,5 +52,5 @@ func main() {
 
 // Handler
 func hello(c echo.Context) error {
-	return c.String(http.StatusOK, "Hello, World!")
+	return c.String(http.StatusOK, "Hello, OCI!")
 }
