@@ -4,10 +4,14 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
+	"io"
+	"io/ioutil"
 	"net/http"
 	"strings"
 	"time"
 
+	"github.com/opencontainers/go-digest"
+	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	"k8s.io/klog"
 )
 
@@ -26,8 +30,12 @@ type HarborClient2 struct {
 
 // NewHarborClient2 return a HarborClient2 instence
 func NewHarborClient2(url, username, password string) *HarborClient2 {
+	if !strings.HasPrefix(url, PrefixHTTPS) {
+		url = fmt.Sprintf("%s%s", PrefixHTTPS, url)
+	}
+
 	return &HarborClient2{
-		BasePath: url + "/api/v2.0",
+		BasePath: strings.TrimSuffix(url, "/") + "/api/v2.0",
 		HTTPClient: &http.Client{
 			Transport: &http.Transport{
 				TLSClientConfig: &tls.Config{
@@ -298,4 +306,82 @@ type Tag struct {
 	Immutable bool `json:"immutable,omitempty"`
 	// The attribute indicates whether the tag is signed or not
 	Signed bool `json:"signed,omitempty"`
+}
+
+// DownloadBlob download blob from harbor
+func (hc *HarborClient2) DownloadBlob(repository string, digest digest.Digest) (io.ReadCloser, error) {
+	url := fmt.Sprintf("%s/v2/%s/blobs/%s", hc.BaseURL, repository, digest)
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Add(http.CanonicalHeaderKey("Accept-Encoding"), "identity")
+	req.SetBasicAuth(hc.Auth.Username, hc.Auth.Password)
+	klog.Infof("download blob url = %s", url)
+	resp, err := hc.HTTPClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+
+	return resp.Body, nil
+}
+
+// FetchOCIManifest fetch OCI manifest form harbor
+func (hc *HarborClient2) FetchOCIManifest(repository, version string) (*ocispec.Manifest, error) {
+	// url := fmt.Sprintf("%s/v2/%s/manifests/%s", hc.BaseURL, repository, version)
+	url := fmt.Sprintf("%s/v2/%s/manifests/%s", hc.BasePath, repository, version)
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Accept", ocispec.MediaTypeImageManifest)
+	req.SetBasicAuth(hc.Auth.Username, hc.Auth.Password)
+	klog.Infof("fetch manifest url = %s", url)
+	resp, err := hc.HTTPClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+
+	defer resp.Body.Close()
+	body, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	deserialized := &ocispec.Manifest{}
+	err = json.Unmarshal(body, deserialized)
+	if err != nil {
+		return nil, err
+	}
+
+	return deserialized, nil
+}
+
+// FetchHelmChartContentDigest ...
+func (hc *HarborClient2) FetchHelmChartContentDigest(repoName, version string) (*digest.Digest, error) {
+	manifest, err := hc.FetchOCIManifest(repoName, version)
+	if err != nil {
+		return nil, err
+	}
+
+	numLayers := len(manifest.Layers)
+	if numLayers != 1 {
+		return nil, fmt.Errorf("manifest does not contain exactly 1 layer (total: %d)", numLayers)
+	}
+
+	var contentLayer *ocispec.Descriptor
+	for _, layer := range manifest.Layers {
+		switch layer.MediaType {
+		case HelmChartContentLayerMediaType:
+			contentLayer = &layer
+		}
+	}
+	if contentLayer == nil {
+		return nil, fmt.Errorf("manifest does not contain a layer with mediatype %s", HelmChartContentLayerMediaType)
+	}
+	if contentLayer.Size == 0 {
+		return nil, fmt.Errorf("manifest layer with mediatype %s is of size 0", HelmChartContentLayerMediaType)
+	}
+
+	return &contentLayer.Digest, nil
 }
