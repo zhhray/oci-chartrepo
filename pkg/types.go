@@ -25,6 +25,10 @@ const (
 	// The content includes your private docker registry FQDN, username, password, email.
 	SecretCfgPath = "/etc/secret/dockerconfigjson"
 
+	// WhiteListFilePath is the path of file whitelist.conf
+	// The file content should in JSON format
+	WhiteListFilePath = "/etc/config/whitelist.conf"
+
 	// SchemeTypeHTTP defines const "http" for registry URL scheme
 	SchemeTypeHTTP = "http"
 	// SchemeTypeHTTPS defines const "https" for registry URL scheme
@@ -41,6 +45,15 @@ const (
 	// HelmChartContentLayerMediaType is the reserved media type for Helm chart package content
 	HelmChartContentLayerMediaType = "application/tar+gzip"
 )
+
+// GlobalWhiteList store whitelist which read from file WhiteListFilePath
+var GlobalWhiteList = &WhiteList{}
+
+// WhiteList defines the whitelist of harbor and registry
+type WhiteList struct {
+	Harbor   map[string][]string `json:"harbor"`
+	Registry map[string][]string `json:"registry"`
+}
 
 // KnownMediaTypes give known media types
 func KnownMediaTypes() []string {

@@ -17,14 +17,7 @@ import (
 func GetChartHandler(c echo.Context) error {
 	name := c.Param("name")
 
-	// var data []byte
-	// var err error
-	// if GlobalBackend.IsHarbor {
-	// 	data, err = PullHarborArtifact(name)
-	// } else {
-	// 	data, err = GetChartData(name)
-	// }
-
+	// 	data, err := GetChartData(name)
 	data, err := PullOCIArtifact(name)
 	if err != nil {
 		return err
@@ -52,7 +45,7 @@ func GetChartHandler(c echo.Context) error {
 // to push OCI Artifacts to OCI Conformant registries, see https://github.com/deislabs/oras
 func PullOCIArtifact(name string) ([]byte, error) {
 	ref := pathToRefCache[name]
-	store, _ := content.NewOCIStore("")
+	store := content.NewMemoryStore()
 	artifact := fmt.Sprintf("%s/%s", GlobalBackend.Host, ref.Name)
 
 	klog.Infof("============artifact====== %s", artifact)
@@ -110,7 +103,7 @@ func PullOCIArtifact(name string) ([]byte, error) {
 }
 
 // fetchBlob retrieves a blob from filesystem
-func fetchBlob(store *content.OCIStore, desc *ocispec.Descriptor) ([]byte, error) {
+func fetchBlob(store *content.Memorystore, desc *ocispec.Descriptor) ([]byte, error) {
 	// reader, err := store.ReaderAt(GlobalBackend.Harbor.AuthContext, *desc)
 	reader, err := store.ReaderAt(context.Background(), *desc)
 	if err != nil {

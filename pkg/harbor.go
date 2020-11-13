@@ -310,7 +310,7 @@ type Tag struct {
 
 // DownloadBlob download blob from harbor
 func (hc *HarborClient2) DownloadBlob(repository string, digest digest.Digest) (io.ReadCloser, error) {
-	url := fmt.Sprintf("%s/v2/%s/blobs/%s", hc.BaseURL, repository, digest)
+	url := fmt.Sprintf("%s/v2/%s/blobs/%s", "hc.BaseURL", repository, digest)
 	req, err := http.NewRequest(http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err

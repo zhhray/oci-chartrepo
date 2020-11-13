@@ -24,6 +24,8 @@ func main() {
 	if err := registryOpts.FullfillRegistryOptions(); err != nil {
 		panic(err)
 	}
+	// Try to load whitelist
+	pkg.LoadWhiteList()
 
 	// Echo instance
 	e := echo.New()

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io/ioutil"
 	"net/http"
+	"regexp"
 	"strings"
 	"sync"
 
@@ -303,61 +304,270 @@ func (b *Backend) listObjectsFromHarbor() ([]HelmOCIConfig, error) {
 	return objects, nil
 }
 
-func (b *Backend) listObjectsFromHarbor2() ([]HelmOCIConfig, error) {
-	projects, err := b.Harbor2.ListProjects()
+// ==================================
+// ListObjects parser all helm chart basic info from oci manifest
+// skip all manifests that are not helm type
+func (b *Backend) ListObjects2() ([]HelmOCIConfig, error) {
+	if b.Harbor != nil {
+		return b.listObjectsFromHarbor2()
+	}
+
+	return b.listObjectsFromRegistry()
+}
+
+func (b *Backend) listObjectsFromRegistry() ([]HelmOCIConfig, error) {
+	repositories, err := b.Hub.Repositories()
 	if err != nil {
 		return nil, err
 	}
 
-	var objects []HelmOCIConfig
-	for _, p := range projects {
-		repositories, err := b.Harbor2.ListRepositories(p.Name)
+	objects := make([]HelmOCIConfig, 0)
+	var isBreak bool
+	if len(GlobalWhiteList.Registry) > 0 {
+		imagesTagsMap := matchImagesForRegistry(repositories)
+
+		for image, tags := range imagesTagsMap {
+			if len(tags) > 0 {
+				for _, tag := range tags {
+					objects, isBreak, err = b.listObjectsByImageAndTag(image, tag, objects)
+					if err != nil {
+						if isBreak {
+							klog.Error("err lsit objects by image and tag", err)
+							break
+						}
+
+						klog.Warning("err lsit objects by image and tag", err)
+					}
+				}
+			} else {
+				objects, isBreak, err = b.listObjectsByImage(image, objects)
+				if err != nil {
+					if isBreak {
+						klog.Error("err lsit objects by image", err)
+						break
+					}
+
+					klog.Warning("err lsit objects by image", err)
+				}
+			}
+		}
+	} else {
+		for _, image := range repositories {
+			objects, isBreak, err = b.listObjectsByImage(image, objects)
+			if err != nil {
+				if isBreak {
+					klog.Error("err lsit objects by image", err)
+					break
+				}
+
+				klog.Warning("err lsit objects by image", err)
+			}
+		}
+	}
+
+	return objects, nil
+}
+
+// matchImagesForRegistry match regexp of images, the regexp string read from whitelist
+func matchImagesForRegistry(repositories []string) map[string][]string {
+	ret := make(map[string][]string)
+	for _, originalImage := range repositories {
+		for regexpImage, tags := range GlobalWhiteList.Registry {
+			r, _ := regexp.Compile(regexpImage)
+			if r != nil && r.MatchString(originalImage) {
+				ret[originalImage] = tags
+				// The match ends once image has been matched
+				break
+			}
+		}
+	}
+
+	return ret
+}
+
+// listObjectsByImage return []HelmOCIConfig, isBreak, error
+func (b *Backend) listObjectsByImage(image string, objects []HelmOCIConfig) ([]HelmOCIConfig, bool, error) {
+	tags, err := b.Hub.Tags(image)
+	if err != nil {
+		klog.Error("err list tags for repo: ", err)
+		// You can list Repositories, but the API returns UNAUTHORIZED or PROJECT_POLICY_VIOLATION when you list tags for a repository
+		if strings.Contains(err.Error(), "repository name not known to registry") ||
+			strings.Contains(err.Error(), "UNAUTHORIZED") ||
+			strings.Contains(err.Error(), "PROJECT_POLICY_VIOLATION") {
+
+			// need break
+			return objects, false, err
+		}
+
+		return objects, true, err
+	}
+
+	for _, tag := range tags {
+		var isBreak bool
+		var err error
+		objects, isBreak, err = b.listObjectsByImageAndTag(image, tag, objects)
 		if err != nil {
-			klog.Warning("List repositories error", err)
+			if isBreak {
+				klog.Error("err lsit objects by image and tag", err)
+				// need break
+				return objects, true, err
+			}
+
+			klog.Warning("err lsit objects by image and tag", err)
+		}
+	}
+
+	return objects, false, nil
+}
+
+// listObjectsByImageAndTag return []HelmOCIConfig, isBreak, error
+func (b *Backend) listObjectsByImageAndTag(image, tag string, objects []HelmOCIConfig) ([]HelmOCIConfig, bool, error) {
+	manifest, err := b.Hub.OCIManifestV1(image, tag)
+	if err != nil {
+		klog.Warning("err get manifest for tag: ", err)
+		// You can list tags, but the API returns UNAUTHORIZED or PROJECT_POLICY_VIOLATION when you get manifest for a tag
+		if strings.Contains(err.Error(), "UNAUTHORIZED") ||
+			strings.Contains(err.Error(), "PROJECT_POLICY_VIOLATION") {
+			return objects, true, err
+		}
+
+		// FIXME: continue or break error.
+		return objects, false, err
+	}
+
+	// if one tag is not helm, consider this image is not
+	if manifest.Config.MediaType != HelmChartConfigMediaType {
+		return objects, true, err
+	}
+
+	// only one layer is allowed
+	if len(manifest.Layers) != 1 {
+		return objects, true, err
+	}
+
+	ref := image + ":" + tag
+
+	// lookup in cache first
+	obj := refToChartCache[ref]
+	if obj != nil {
+		objects = append(objects, *obj)
+		return objects, false, nil
+	}
+
+	// fetch manifest config and parse to helm info
+	digest := manifest.Config.Digest
+	result, err := b.Hub.DownloadBlob(image, digest)
+	if err != nil {
+		return objects, true, err
+	}
+	body, err := ioutil.ReadAll(result)
+	if err != nil {
+		return objects, true, err
+	}
+	result.Close()
+
+	cfg := &HelmOCIConfig{}
+	err = json.Unmarshal(body, cfg)
+	if err != nil {
+		return objects, true, err
+	}
+
+	cfg.Digest = manifest.Layers[0].Digest.Encoded()
+	objects = append(objects, *cfg)
+
+	// may be helm and captain are pulling same time
+	l.Lock()
+	refToChartCache[ref] = cfg
+	pathToRefCache[genPath(cfg.Name, cfg.Version)] = RefData{
+		Name:   ref,
+		Digest: manifest.Layers[0].Digest,
+	}
+	l.Unlock()
+
+	return objects, false, nil
+}
+
+func (b *Backend) listObjectsFromHarbor2() ([]HelmOCIConfig, error) {
+	objects := make([]HelmOCIConfig, 0)
+	if len(GlobalWhiteList.Harbor) > 0 {
+		for p, rs := range GlobalWhiteList.Harbor {
+			if len(rs) > 0 {
+				for _, r := range rs {
+					objects, _ = b.listArtifactsByRepository(p, r, objects)
+				}
+			} else {
+				objects, _ = b.listArtifactsByProject(p, objects)
+			}
+		}
+	} else {
+		projects, err := b.Harbor2.ListProjects()
+		if err != nil {
+			return nil, err
+		}
+
+		for _, p := range projects {
+			objects, _ = b.listArtifactsByProject(p.Name, objects)
+		}
+	}
+
+	return objects, nil
+}
+
+func (b *Backend) listArtifactsByProject(projectName string, objects []HelmOCIConfig) ([]HelmOCIConfig, error) {
+	repositories, err := b.Harbor2.ListRepositories(projectName)
+	if err != nil {
+		klog.Warning("List repositories error", err)
+		return objects, err
+	}
+
+	for _, repo := range repositories {
+		_name := repo.Name
+		if strings.HasPrefix(_name, projectName) {
+			_name = _name[len(projectName)+1:]
+		}
+
+		objects, _ = b.listArtifactsByRepository(projectName, _name, objects)
+	}
+
+	return objects, nil
+}
+
+func (b *Backend) listArtifactsByRepository(projectName, repositoryName string, objects []HelmOCIConfig) ([]HelmOCIConfig, error) {
+	artifacts, err := b.Harbor2.ListArtifacts(projectName, repositoryName)
+	if err != nil {
+		klog.Warning("List artifacts error", err)
+		return objects, err
+	}
+
+	for _, atf := range artifacts {
+		if atf.MediaType != HelmChartConfigMediaType {
 			continue
 		}
 
-		for _, repo := range repositories {
-			_name := repo.Name
-			if strings.HasPrefix(_name, p.Name) {
-				_name = _name[len(p.Name)+1:]
-			}
-			artifacts, err := b.Harbor2.ListArtifacts(p.Name, _name)
-			if err != nil {
-				klog.Warning("List artifacts error", err)
-				continue
-			}
-
-			for _, atf := range artifacts {
-				if atf.MediaType != HelmChartConfigMediaType {
-					continue
-				}
-
-				body, err := json.Marshal(atf.ExtraAttrs)
-				if err != nil {
-					klog.Warning("Json Marshal artifcat extra_attrs error", err)
-					continue
-				}
-
-				cfg := &HelmOCIConfig{}
-				if err := json.Unmarshal(body, cfg); err != nil {
-					klog.Warning("Json Unmarshal artifcat extra_attrs to HelmOCIConfig error", err)
-					continue
-				}
-
-				cfg.Digest = atf.Digest
-				objects = append(objects, *cfg)
-
-				// put into cache
-				ref := repo.Name + ":" + cfg.Version
-				l.Lock()
-				pathToRefCache[genPath(cfg.Name, cfg.Version)] = RefData{
-					Name:   ref,
-					Digest: digest.FromString(cfg.Digest),
-				}
-				l.Unlock()
-			}
+		body, err := json.Marshal(atf.ExtraAttrs)
+		if err != nil {
+			klog.Warning("Json Marshal artifcat extra_attrs error", err)
+			continue
 		}
+
+		cfg := &HelmOCIConfig{}
+		if err := json.Unmarshal(body, cfg); err != nil {
+			klog.Warning("Json Unmarshal artifcat extra_attrs to HelmOCIConfig error", err)
+			continue
+		}
+
+		cfg.Digest = atf.Digest
+		objects = append(objects, *cfg)
+
+		// put into cache
+		ref := fmt.Sprintf("%s/%s:%s", projectName, repositoryName, cfg.Version)
+		digest, _ := digest.Parse(cfg.Digest)
+		l.Lock()
+		pathToRefCache[genPath(cfg.Name, cfg.Version)] = RefData{
+			Name:   ref,
+			Digest: digest,
+		}
+		l.Unlock()
 	}
 
 	return objects, nil
