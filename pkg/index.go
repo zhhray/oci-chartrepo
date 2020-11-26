@@ -4,16 +4,40 @@ import (
 	"github.com/ghodss/yaml"
 	"github.com/labstack/echo/v4"
 	"helm.sh/helm/v3/pkg/repo"
+	"k8s.io/klog"
 )
 
-// Handler
-func IndexHandler(c echo.Context) error {
-	c.Response().Header().Set("Content-Type", "application/x-yaml")
+var (
+	// RepoIndex cache index data
+	RepoIndex []byte
+)
+
+// RefreshIndexData keep fetch index data from registry and store it to a global var
+func RefreshIndexData() error {
 	data, err := genIndex()
 	if err != nil {
 		return err
 	}
-	_, err = c.Response().Write(data)
+
+	klog.Info("refresh repo index data")
+	RepoIndex = data
+
+	return nil
+}
+
+// IndexHandler handler index request
+func IndexHandler(c echo.Context) error {
+	c.Response().Header().Set("Content-Type", "application/x-yaml")
+	data := RepoIndex
+	if data == nil {
+		result, err := genIndex()
+		if err != nil {
+			return err
+		}
+		data = result
+	}
+
+	_, err := c.Response().Write(data)
 	return err
 }
 

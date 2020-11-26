@@ -1,0 +1,21 @@
+kind: ConfigMap
+apiVersion: v1
+metadata:
+  name: oci-registry-whitelist-cm
+data:
+  whitelist.conf: |-
+    {
+        "harbor": {
+            "proj1": [
+                "repo1-"
+            ],
+            "proj2": []
+        },
+        "registry": {
+            "image1": [
+                "tag1",
+                "tag2"
+            ],
+            "test/chart-abc": []
+        }
+    }

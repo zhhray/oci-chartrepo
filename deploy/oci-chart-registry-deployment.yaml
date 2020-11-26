@@ -1,0 +1,48 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app: oci-chart-registry
+  name: oci-chart-registry
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: oci-chart-registry
+  template:
+    metadata:
+      labels:
+        app: oci-chart-registry
+    spec:
+      containers:
+        - name: oci-chart-registry
+          args:
+            - --storage-registry-repo={{remote.registry.address}}
+            - --storage-registry-scheme={{remote.registry.scheme}}  # HTTP or HTTPS
+            - --port=8080
+          image: oci-chart-registry
+          imagePullPolicy: IfNotPresent
+          # if your registry does not require user authentication, remove the following code about registry-secret volume.
+          volumeMounts:
+            - name: registry-secret
+              mountPath: /etc/secret/dockerconfigjson
+              subPath: dockerconfigjson
+            # if there are lots of data in your registry, but just focus on the OCI related data, you can mount the whitelist.conf file from configmap
+            # if you do not need to specify a whitelist, remove the following code about whitelist-cm volume
+            - name: whitelist-cm
+              mountPath: /etc/config/whitelist.conf
+              subPath: whitelist.conf
+      volumes:
+        - name: registry-secret
+          secret:
+            secretName: my-registry-secret
+            items:
+              - key: .dockerconfigjson
+                path: dockerconfigjson
+        - name: whitelist-cm
+          configMap:
+            name: oci-registry-whitelist-cm
+            items:
+              - key: whitelist.conf
+                path: whitelist.conf
+          
