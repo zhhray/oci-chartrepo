@@ -11,6 +11,8 @@ require (
 	github.com/opencontainers/go-digest v1.0.0
 	github.com/opencontainers/image-spec v1.0.1
 	helm.sh/helm/v3 v3.3.1
+	k8s.io/apimachinery v0.18.8
+	k8s.io/client-go v0.18.8
 	k8s.io/klog v1.0.0
 )
 

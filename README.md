@@ -59,7 +59,7 @@ oci-chartrepo as an adapter that supports the transformation of OCI data structu
   docker run -d --restart=always --name oci-chart-registry \
   -p 8088:8080 \
   -v ~/dockerconfigjson:/etc/secret/dockerconfigjson \
-  oci-chart-registry --storage-registry-repo={your_registry_addr} --storage-registry-scheme=HTTPS --port=8080
+  oci-chart-registry --storage-registry-repo={your_registry_addr} --port=8080
 ```
 
 ## Run in kubernetes
@@ -71,15 +71,20 @@ oci-chartrepo as an adapter that supports the transformation of OCI data structu
   # If there are lots of data in your registry, but just focus on the OCI related data, you can mount the whitelist.conf into the container.
   kubectl apply -f deploy/oci-chart-registry-whitelist-cm.yaml
 
-  # Please modify the --storage-registry-repo and --storage-registry-scheme parameters before apply
+  # Please modify the --storage-registry-repo parameters before apply
   kubectl apply -f deploy/oci-chart-registry-deployment.yaml
 ```
 
 ## WhiteList Example
 ```sh
   # Support for specifying whitelist for different types of Backend.
+  # Mode means the mode of the whitelist and supports three modes (strict, match, auto).
+  #   "strict" stands for strict mode, and if you specify mode: strict manually in the whitelist, the contents of the chartVersions in the whitelist will be loaded directly.
+  #   "match" stands for match mode, and if you manually specify mode: match in the whitelist, the contents of harbor or registry in the whitelist will be loaded directly.
+  #   other (including no mode field) stands for auto mode, will get the chartVersions from ProductBase(a CRD resource of ACP) first, and automatically sets mode to "strict", failing which automatically sets mode to "match".
+  #
   # Backend is Harbor:
-  #   "proj1": ["repo1-"] means that will get artifacts from repositories of proj1(Project), the names of these repositories can match the string "repo1-"; 
+  #   "proj1": ["repo1-"] means that will get artifacts from repositories of proj1(Project), the names of these repositories can match the string "repo1-";
   #   "proj2": [] means that get artifacts from all repositories of proj2(Project).
   # Backend is Registry:
   # The concept of "project" does not exist in Docker Registry.
@@ -88,6 +93,7 @@ oci-chartrepo as an adapter that supports the transformation of OCI data structu
   #
   # Example
   {
+      "mode": "",
       "harbor": {
           "proj1": [
               "repo1-"
@@ -100,6 +106,16 @@ oci-chartrepo as an adapter that supports the transformation of OCI data structu
               "tag2"
           ],
           "test/chart-abc": [],
-      }
+      },
+      "chartVersions": [
+          {
+              "name": "test/chart-abc",
+              "version": "v1.0"
+          },
+          {
+              "name": "image1",
+              "version": "tag1"
+          }
+      ]
   }
 ```

@@ -3,7 +3,7 @@ package pkg
 import (
 	"encoding/json"
 	"io/ioutil"
-	"strings"
+	"time"
 
 	"github.com/heroku/docker-registry-client/registry"
 	"k8s.io/klog"
@@ -17,72 +17,64 @@ type RegistryHub struct {
 // ListObjects parser all helm chart basic info from oci manifest
 // skip all manifests that are not helm type
 func (r *RegistryHub) ListObjects() ([]HelmOCIConfig, error) {
-	objects := make([]HelmOCIConfig, 0)
+	st := time.Now()
+	objects := loadObjectsFromCache()
 	var isBreak bool
 	var err error
-	if len(GlobalWhiteList.Registry) > 0 {
-		for image, tags := range GlobalWhiteList.Registry {
-			if len(tags) > 0 {
-				for _, tag := range tags {
-					objects, isBreak, err = r.listObjectsByImageAndTag(image, tag, objects)
-					if err != nil {
-						if isBreak {
-							klog.Error("err lsit objects by image and tag", err)
-							break
-						}
-
-						klog.Warning("err lsit objects by image and tag", err)
-					}
-				}
-			} else {
-				objects, isBreak, err = r.listObjectsByImage(image, objects)
-				if err != nil {
-					if isBreak {
-						klog.Error("err lsit objects by image", err)
-						break
-					}
-
-					klog.Warning("err lsit objects by image", err)
-				}
+	if GlobalWhiteList.Mode == StrictMode {
+		for _, cv := range GlobalWhiteList.ChartVersions {
+			// cv.Name: acp/chart-alauda-container-platform
+			// if strict: true, will ignore err and not break loop
+			objects, _, err = r.listObjectsByImageAndTag(cv.Name, cv.Version, objects)
+			if err != nil {
+				klog.Warning("err lsit objects by image and tag", err)
 			}
 		}
 	} else {
-		repositories, err := r.Registry.Repositories()
-		if err != nil {
-			return nil, err
-		}
+		if len(GlobalWhiteList.Registry) > 0 {
+			for image, tags := range GlobalWhiteList.Registry {
+				if len(tags) > 0 {
+					for _, tag := range tags {
+						objects, isBreak, err = r.listObjectsByImageAndTag(image, tag, objects)
+						if err != nil {
+							if isBreak {
+								klog.Error("err lsit objects by image and tag", err)
+								break
+							}
 
-		for _, image := range repositories {
-			objects, isBreak, err = r.listObjectsByImage(image, objects)
-			if err != nil {
-				if isBreak {
-					klog.Error("err lsit objects by image", err)
-					break
+							klog.Warning("err lsit objects by image and tag", err)
+						}
+					}
+				} else {
+					objects, _ = r.listObjectsByImage(image, objects)
 				}
+			}
+		} else {
+			repositories, err := r.Registry.Repositories()
+			if err != nil {
+				return nil, err
+			}
 
-				klog.Warning("err lsit objects by image", err)
+			for _, image := range repositories {
+				objects, _ = r.listObjectsByImage(image, objects)
 			}
 		}
 	}
 
+	klog.Infof("======repo length is %d", len(repoMap))
+	klog.Infof("======objects length is %d", len(objects))
+	ed := time.Now()
+	sub := ed.Sub(st)
+	klog.Infof("======listObjects use %f min", sub.Minutes())
 	return objects, nil
 }
 
-// listObjectsByImage return []HelmOCIConfig, isBreak, error
-func (r *RegistryHub) listObjectsByImage(image string, objects []HelmOCIConfig) ([]HelmOCIConfig, bool, error) {
+// listObjectsByImage return []HelmOCIConfig, error
+func (r *RegistryHub) listObjectsByImage(image string, objects []HelmOCIConfig) ([]HelmOCIConfig, error) {
 	tags, err := r.Registry.Tags(image)
 	if err != nil {
 		klog.Error("err list tags for repo: ", err)
-		// You can list Repositories, but the API returns UNAUTHORIZED or PROJECT_POLICY_VIOLATION when you list tags for a repository
-		if strings.Contains(err.Error(), "repository name not known to registry") ||
-			strings.Contains(err.Error(), "UNAUTHORIZED") ||
-			strings.Contains(err.Error(), "PROJECT_POLICY_VIOLATION") {
-
-			// need break
-			return objects, true, err
-		}
-
-		return objects, false, err
+		return objects, err
 	}
 
 	for _, tag := range tags {
@@ -100,22 +92,16 @@ func (r *RegistryHub) listObjectsByImage(image string, objects []HelmOCIConfig) 
 		}
 	}
 
-	return objects, false, nil
+	return objects, nil
 }
 
 // listObjectsByImageAndTag return []HelmOCIConfig, isBreak, error
 func (r *RegistryHub) listObjectsByImageAndTag(image, tag string, objects []HelmOCIConfig) ([]HelmOCIConfig, bool, error) {
+	repoMap[image+":"+tag] = image + ":" + tag
+
 	manifest, err := r.Registry.OCIManifestV1(image, tag)
 	if err != nil {
 		klog.Warning("err get manifest for tag: ", err)
-		// You can list tags, but the API returns UNAUTHORIZED or PROJECT_POLICY_VIOLATION when you get manifest for a tag
-		if strings.Contains(err.Error(), "UNAUTHORIZED") ||
-			strings.Contains(err.Error(), "PROJECT_POLICY_VIOLATION") {
-			// need break
-			return objects, true, err
-		}
-
-		// continue here.
 		return objects, false, err
 	}
 
@@ -129,12 +115,7 @@ func (r *RegistryHub) listObjectsByImageAndTag(image, tag string, objects []Helm
 		return objects, true, err
 	}
 
-	ref := image + ":" + tag
-
-	// lookup in cache first
-	obj := refToChartCache[ref]
-	if obj != nil {
-		objects = append(objects, *obj)
+	if objectAlreadyExist(objects, manifest.Layers[0].Digest.Encoded()) {
 		return objects, false, nil
 	}
 
@@ -159,6 +140,7 @@ func (r *RegistryHub) listObjectsByImageAndTag(image, tag string, objects []Helm
 	cfg.Digest = manifest.Layers[0].Digest.Encoded()
 	objects = append(objects, *cfg)
 
+	ref := image + ":" + tag
 	// may be helm and captain are pulling same time
 	l.Lock()
 	refToChartCache[ref] = cfg

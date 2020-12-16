@@ -196,6 +196,33 @@ func (hc *HarborClient) ListArtifacts(projectName, repoName string) ([]*Artifact
 	return artifacts, nil
 }
 
+// GetArtifact get an artifact from a harbor with v2 api
+func (hc *HarborClient) GetArtifact(projectName, repositoryName, tag string) (*Artifact, error) {
+	urlStr := hc.url("/projects/%s/repositories/%s/artifacts/%s", projectName, repositoryName, tag)
+	req, err := http.NewRequest(http.MethodGet, urlStr, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.SetBasicAuth(hc.Auth.Username, hc.Auth.Password)
+	klog.Infof("get artifact url = %s", urlStr)
+	resp, err := hc.HTTPClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	artifact := &Artifact{}
+	if resp.StatusCode < 300 {
+		encoder := json.NewDecoder(resp.Body)
+		err = encoder.Decode(&artifact)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	return artifact, nil
+}
+
 // Artifact the struct of harbor Artifact
 type Artifact struct {
 	// The ID of the artifact
@@ -225,40 +252,54 @@ type HarborHub struct {
 // skip all manifests that are not helm type
 func (h *HarborHub) ListObjects() ([]HelmOCIConfig, error) {
 	st := time.Now()
-	objects := make([]HelmOCIConfig, 0)
-	if len(GlobalWhiteList.Harbor) > 0 {
-		for p, rs := range GlobalWhiteList.Harbor {
-			if len(rs) > 0 {
-				repos := []*Repository{}
-				for _, r := range rs {
-					rets, err := h.Harbor.ListRepositories(p, r)
-					if err != nil {
-						continue
-					}
+	objects := loadObjectsFromCache()
 
-					for _, ret := range rets {
-						repos = append(repos, ret)
-					}
-				}
+	if GlobalWhiteList.Mode == StrictMode {
+		for _, cv := range GlobalWhiteList.ChartVersions {
+			// cv.Name: acp/chart-alauda-container-platform
+			ss := strings.Split(cv.Name, "/")
+			if len(ss) == 2 {
+				p := ss[0]
+				r := ss[1]
 
-				for _, repo := range repos {
-					objects, _ = h.listArtifactsByRepository(p, repo.Name, objects)
-				}
-			} else {
-				objects, _ = h.listArtifactsByProject(p, objects)
+				objects, _ = h.listArtifactsByRepositoryAndTag(p, r, cv.Version, objects)
 			}
-
-			projMap[p] = p
 		}
 	} else {
-		projects, err := h.Harbor.ListProjects()
-		if err != nil {
-			return nil, err
-		}
+		if len(GlobalWhiteList.Harbor) > 0 {
+			for p, rs := range GlobalWhiteList.Harbor {
+				if len(rs) > 0 {
+					repos := []*Repository{}
+					for _, r := range rs {
+						rets, err := h.Harbor.ListRepositories(p, r)
+						if err != nil {
+							continue
+						}
 
-		for _, p := range projects {
-			objects, _ = h.listArtifactsByProject(p.Name, objects)
-			projMap[p.Name] = p.Name
+						for _, ret := range rets {
+							repos = append(repos, ret)
+						}
+					}
+
+					for _, repo := range repos {
+						objects, _ = h.listArtifactsByRepository(p, repo.Name, objects)
+					}
+				} else {
+					objects, _ = h.listArtifactsByProject(p, objects)
+				}
+
+				projMap[p] = p
+			}
+		} else {
+			projects, err := h.Harbor.ListProjects()
+			if err != nil {
+				return nil, err
+			}
+
+			for _, p := range projects {
+				objects, _ = h.listArtifactsByProject(p.Name, objects)
+				projMap[p.Name] = p.Name
+			}
 		}
 	}
 
@@ -287,12 +328,9 @@ func (h *HarborHub) listArtifactsByProject(projectName string, objects []HelmOCI
 }
 
 func (h *HarborHub) listArtifactsByRepository(projectName, repositoryName string, objects []HelmOCIConfig) ([]HelmOCIConfig, error) {
-	repoMap[repositoryName] = repositoryName
-
 	if strings.HasPrefix(repositoryName, projectName) {
 		repositoryName = repositoryName[len(projectName)+1:]
 	}
-	klog.Infof("======will list artifacts of proj %s, repo %s", projectName, repositoryName)
 	artifacts, err := h.Harbor.ListArtifacts(projectName, repositoryName)
 	if err != nil {
 		klog.Warning("List artifacts error", err)
@@ -300,62 +338,69 @@ func (h *HarborHub) listArtifactsByRepository(projectName, repositoryName string
 	}
 
 	for _, atf := range artifacts {
-		if atf.MediaType != HelmChartConfigMediaType {
-			continue
-		}
-
-		if artifactAlreadyExist(objects, atf) {
-			continue
-		}
-
-		// lookup in cache first
-		obj := refToChartCache[atf.Digest]
-		if obj != nil {
-			objects = append(objects, *obj)
-			continue
-		}
-
-		body, err := json.Marshal(atf.ExtraAttrs)
-		if err != nil {
-			klog.Warning("Json Marshal artifcat extra_attrs error", err)
-			continue
-		}
-
-		cfg := &HelmOCIConfig{}
-		if err := json.Unmarshal(body, cfg); err != nil {
-			klog.Warning("Json Unmarshal artifcat extra_attrs to HelmOCIConfig error", err)
-			continue
-		}
-
-		cfg.Digest = atf.Digest
-		objects = append(objects, *cfg)
-
-		// put into cache
-		ref := fmt.Sprintf("%s/%s:%s", projectName, repositoryName, cfg.Version)
-		digest, _ := digest.Parse(cfg.Digest)
-		l.Lock()
-		refToChartCache[atf.Digest] = cfg
-		pathToRefCache[genPath(cfg.Name, cfg.Version)] = RefData{
-			Name:   ref,
-			Digest: digest,
-		}
-		l.Unlock()
+		ref := fmt.Sprintf("%s/%s", projectName, repositoryName)
+		objects, _ = convertArtifactIntoObjects(atf, ref, objects)
 	}
 
 	return objects, nil
 }
 
-// artifactAlreadyExist determine object duplication
-func artifactAlreadyExist(objects []HelmOCIConfig, atf *Artifact) bool {
+func (h *HarborHub) listArtifactsByRepositoryAndTag(projectName, repositoryName, tag string, objects []HelmOCIConfig) ([]HelmOCIConfig, error) {
+	atf, err := h.Harbor.GetArtifact(projectName, repositoryName, tag)
+	if err != nil {
+		klog.Warning("Get artifact error", err)
+		return objects, err
+	}
+
+	ref := fmt.Sprintf("%s/%s", projectName, repositoryName)
+	objects, _ = convertArtifactIntoObjects(atf, ref, objects)
+
+	return objects, nil
+}
+
+func convertArtifactIntoObjects(atf *Artifact, ref string, objects []HelmOCIConfig) ([]HelmOCIConfig, error) {
 	if atf == nil {
-		return false
+		return objects, nil
 	}
 
-	for _, obj := range objects {
-		if obj.Digest == atf.Digest {
-			return true
-		}
+	if atf.MediaType != HelmChartConfigMediaType {
+		return objects, nil
 	}
 
-	return false
+	if objectAlreadyExist(objects, atf.Digest) {
+		return objects, nil
+	}
+
+	body, err := json.Marshal(atf.ExtraAttrs)
+	if err != nil {
+		klog.Warning("Json Marshal artifcat extra_attrs error", err)
+		return objects, nil
+	}
+
+	cfg := &HelmOCIConfig{}
+	if err := json.Unmarshal(body, cfg); err != nil {
+		klog.Warning("Json Unmarshal artifcat extra_attrs to HelmOCIConfig error", err)
+		return objects, nil
+	}
+
+	cfg.Digest = atf.Digest
+	objects = append(objects, *cfg)
+
+	digest, err := digest.Parse(cfg.Digest)
+	if err != nil {
+		klog.Warning("cfg.Digest Parse error", err)
+		return objects, err
+	}
+
+	ref = fmt.Sprintf("%s:%s", ref, cfg.Version)
+	// may be helm and captain are pulling same time
+	l.Lock()
+	refToChartCache[atf.Digest] = cfg
+	pathToRefCache[genPath(cfg.Name, cfg.Version)] = RefData{
+		Name:   ref,
+		Digest: digest,
+	}
+	l.Unlock()
+
+	return objects, nil
 }

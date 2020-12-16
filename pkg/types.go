@@ -18,8 +18,13 @@ import (
 	"github.com/opencontainers/go-digest"
 	"helm.sh/helm/v3/pkg/chart"
 	"helm.sh/helm/v3/pkg/repo"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/klog"
 )
+
+// WhiteListMode define the mode of WhiteList
+type WhiteListMode string
 
 const (
 	// SecretCfgPath should in JSON format, is the kubernetes.io/dockerconfigjson types of kubernetes secret.
@@ -45,6 +50,11 @@ const (
 
 	// HelmChartContentLayerMediaType is the reserved media type for Helm chart package content
 	HelmChartContentLayerMediaType = "application/tar+gzip"
+
+	// StrictMode is strict mode
+	StrictMode WhiteListMode = "strict"
+	// MatchMode is match mode
+	MatchMode WhiteListMode = "match"
 )
 
 var (
@@ -64,8 +74,11 @@ var (
 
 // WhiteList defines the whitelist of harbor and registry
 type WhiteList struct {
-	Harbor   map[string][]string `json:"harbor"`
-	Registry map[string][]string `json:"registry"`
+	// Mode value could be : "strict", "match", others
+	Mode          WhiteListMode       `json:"mode"`
+	Harbor        map[string][]string `json:"harbor"`
+	Registry      map[string][]string `json:"registry"`
+	ChartVersions []ChartVersion      `json:"chartVersions"`
 }
 
 // KnownMediaTypes give known media types
@@ -277,4 +290,41 @@ func (h *HelmOCIConfig) ToChartVersion() *repo.ChartVersion {
 	v.URLs = []string{"charts/" + genPath(h.Name, h.Version)}
 
 	return &v
+}
+
+// ChartVersion include the chart name and version
+type ChartVersion struct {
+	Name    string `json:"name"`
+	Version string `json:"version"`
+}
+
+// ProductBaseSpec defined for ProductBase.Spec
+type ProductBaseSpec struct {
+	ChartVersions []ChartVersion `json:"chartVersions"`
+}
+
+// ProductBase defined a struct for ProductBase
+type ProductBase struct {
+	metav1.TypeMeta   `json:",inline"`
+	metav1.ObjectMeta `json:"metadata,omitempty"`
+
+	Spec *ProductBaseSpec `json:"spec"`
+}
+
+// DeepCopyInto copies all properties of this object into another object of the
+// same type that is provided as a pointer.
+func (in *ProductBase) DeepCopyInto(out *ProductBase) {
+	out.TypeMeta = in.TypeMeta
+	out.ObjectMeta = in.ObjectMeta
+	out.Spec = &ProductBaseSpec{
+		ChartVersions: in.Spec.ChartVersions,
+	}
+}
+
+// DeepCopyObject returns a generically typed copy of an object
+func (in *ProductBase) DeepCopyObject() runtime.Object {
+	out := ProductBase{}
+	in.DeepCopyInto(&out)
+
+	return &out
 }
