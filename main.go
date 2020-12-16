@@ -3,7 +3,7 @@ package main
 import (
 	"flag"
 	"net/http"
-	// "time"
+	"time"
 
 	"github.com/alauda/oci-chartrepo/pkg"
 	"github.com/labstack/echo/v4"
@@ -40,15 +40,15 @@ func main() {
 	}
 
 	// start background job
-	// go func() {
-	// 	for {
-	// 		// every 5 min
-	// 		time.Sleep(5 * time.Minute)
+	go func() {
+		for {
+			// every 5 min
+			time.Sleep(5 * time.Minute)
 
-	// 		// ignore error in background job
-	// 		pkg.RefreshIndexData()
-	// 	}
-	// }()
+			// ignore error in background job
+			pkg.RefreshIndexData()
+		}
+	}()
 
 	// Middleware
 	e.Use(middleware.Logger())
